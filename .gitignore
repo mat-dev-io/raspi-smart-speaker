@@ -1,0 +1,9 @@
+.env
+*.env
+*.wav
+*.flac
+*.mp3
+*.log
+recordings/
+__pycache__/
+.venv/
