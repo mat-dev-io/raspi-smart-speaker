@@ -17,7 +17,7 @@ import httpx
 from . import audio
 from .config import ROOT, load_env
 from .llm import Claude
-from .stt import GoogleSTT
+from .stt import make_stt
 from .tts import GoogleTTS
 
 LOG = ROOT / "logs" / "latency.jsonl"
@@ -30,7 +30,7 @@ def ms(start: float, end: float) -> int:
 class Pipeline:
     def __init__(self):
         self.http = httpx.Client(timeout=30)
-        self.stt = GoogleSTT(self.http)
+        self.stt = make_stt(self.http)
         self.llm = Claude()
         self.tts = GoogleTTS(self.http)
 
