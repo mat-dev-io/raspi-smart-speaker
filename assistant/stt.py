@@ -1,4 +1,4 @@
-"""Google Cloud Speech-to-Text（v1 REST, 同期認識）"""
+"""Google Cloud Speech-to-Text（v1 REST, 同期認識）と、STT の選択"""
 import base64
 import os
 
@@ -32,3 +32,16 @@ class GoogleSTT:
             raise RuntimeError(f"STT {r.status_code}: {r.text}")
         results = r.json().get("results", [])
         return "".join(res["alternatives"][0]["transcript"] for res in results if res.get("alternatives"))
+
+
+def make_stt(http: httpx.Client):
+    """STT_ENGINE（google / reazon / whisper）で STT を選ぶ。ローカル版は使うときだけ読み込む"""
+    engine = os.environ.get("STT_ENGINE", "google")
+    if engine == "google":
+        return GoogleSTT(http)
+    from . import stt_local
+    if engine == "reazon":
+        return stt_local.ReazonSTT()
+    if engine == "whisper":
+        return stt_local.WhisperSTT()
+    raise SystemExit(f"NG: STT_ENGINE={engine} は未対応（google / reazon / whisper）")
