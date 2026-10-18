@@ -5,3 +5,6 @@ pyusb==1.3.1
 # ローカル STT（段階 2）
 sherpa-onnx==1.13.8
 faster-whisper==1.2.1
+# ローカル TTS（段階 2）。voicevox_core は PyPI に無いので GitHub のリリースから入れる（Pi の aarch64 用）
+pyopenjtalk-plus==0.4.1.post9
+voicevox_core @ https://github.com/VOICEVOX/voicevox_core/releases/download/0.17.0/voicevox_core-0.17.0-cp310-abi3-manylinux_2_34_aarch64.whl ; platform_machine == "aarch64"

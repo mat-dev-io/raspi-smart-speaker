@@ -11,6 +11,8 @@ from pathlib import Path
 LOG = Path(__file__).resolve().parent.parent / "logs" / "latency.jsonl"
 COLUMNS = [("stt_ms", "STT"), ("llm_ms", "Claude"), ("tts_ms", "TTS"),
            ("play_ms", "再生開始"), ("total_ms", "合計")]
+# 段階 2 から（1 文ずつ合成する作り）。古い行には無いので、全行にあるときだけ出す
+EXTRA = [("tts_all_ms", "全文の合成"), ("stall_ms", "途中の無音")]
 
 
 def p90(values: list[int]) -> float:
@@ -31,10 +33,11 @@ def main() -> None:
     if not rows:
         raise SystemExit("該当する記録がない")
 
-    print(f"n={len(rows)}  model={sorted({r['model'] for r in rows})}  voice={sorted({r['voice'] for r in rows})}\n")
+    print(f"n={len(rows)}  model={sorted({r['model'] for r in rows})}  voice={sorted({r['voice'] for r in rows})}"
+          f"  stt={sorted({r['stt_model'] for r in rows})}\n")
     print("| 区間 | 中央値 | p90 | 最小 | 最大 |")
     print("|---|---:|---:|---:|---:|")
-    for key, label in COLUMNS:
+    for key, label in COLUMNS + [c for c in EXTRA if all(c[0] in r for r in rows)]:
         v = [r[key] for r in rows]
         print(f"| {label} | {statistics.median(v):.0f} | {p90(v):.0f} | {min(v)} | {max(v)} |")
     print("\n（単位 ms。起点は録音終了＝Enter を押した時刻、終点は再生開始）")

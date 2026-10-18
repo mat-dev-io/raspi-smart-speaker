@@ -1,13 +1,15 @@
-"""段階 1: Enter キー → 録音 → Google STT → Claude → Google TTS → 再生
+"""Enter キー → 録音 → STT → Claude → TTS → 再生（STT・TTS は .env の STT_ENGINE / TTS_ENGINE で選ぶ）
 
 使い方（Pi 上、リポジトリ直下で）:
   .venv/bin/python -m assistant.main                         # マイク。Enter で録音開始・終了
   .venv/bin/python -m assistant.main --save recordings       # マイク。録音を WAV で保存する
   .venv/bin/python -m assistant.main --wav recordings/*.wav --repeat 3   # 録音済み WAV で計測
 各区間の時間は logs/latency.jsonl に 1 行ずつ追記する。
+回答は 1 文ずつ合成し、1 文目ができたら再生を始める（TTS_SPLIT=0 で段階 1 と同じく全文をまとめて合成する）。
 """
 import argparse
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +20,7 @@ from . import audio
 from .config import ROOT, load_env
 from .llm import Claude
 from .stt import make_stt
-from .tts import GoogleTTS
+from .tts import make_tts, split_sentences
 
 LOG = ROOT / "logs" / "latency.jsonl"
 
@@ -32,7 +34,8 @@ class Pipeline:
         self.http = httpx.Client(timeout=30)
         self.stt = make_stt(self.http)
         self.llm = Claude()
-        self.tts = GoogleTTS(self.http)
+        self.tts = make_tts(self.http)
+        self.split = os.environ.get("TTS_SPLIT", "1") == "1"
 
     def run(self, pcm: bytes, source: str, t_end: float) -> None:
         """t_end は録音を終えた時刻（遅延の起点）"""
@@ -51,18 +54,33 @@ class Pipeline:
         t_llm = time.monotonic()
         print(f"Claude: {reply}")
 
-        wav = self.tts.synthesize(reply)
-        t_tts = time.monotonic()
+        sentences = split_sentences(reply) if self.split else [reply]
+        player = audio.Player()  # aplay の起動は合成の間に済ませておく
+        reply_sec = stall = 0.0
+        try:
+            for i, sentence in enumerate(sentences):
+                chunk = audio.wav_pcm(self.tts.synthesize(sentence))
+                t = time.monotonic()
+                if i == 0:
+                    t_tts = t_play = t
+                else:
+                    # 前の文までの再生が終わる予定の時刻より遅れた分は、無音で待たせている
+                    stall += max(0.0, t - (t_play + stall + reply_sec))
+                player.write(chunk)
+                reply_sec += len(chunk) / 2 / audio.RATE
+            t_tts_all = time.monotonic()
+        finally:
+            player.close()
 
-        played = {}
-        audio.play_wav(wav, on_start=lambda: played.setdefault("t", time.monotonic()))
-
+        # tts_ms は 1 文目の合成が終わるまで（TTS_SPLIT=0 なら全文）。tts_all_ms は全文の合成が終わるまで
         rec.update(stt_ms=ms(t_end, t_stt), llm_ms=ms(t_stt, t_llm), tts_ms=ms(t_llm, t_tts),
-                   play_ms=ms(t_tts, played["t"]), total_ms=ms(t_end, played["t"]),
-                   reply_sec=round(audio.wav_seconds(wav), 2), reply_chars=len(reply),
+                   tts_all_ms=ms(t_llm, t_tts_all), stall_ms=round(stall * 1000), sentences=len(sentences),
+                   split=self.split, play_ms=ms(t_tts, t_play), total_ms=ms(t_end, t_play),
+                   reply_sec=round(reply_sec, 2), reply_chars=len(reply),
                    transcript=text, reply=reply)
         print(f"  遅延 合計 {rec['total_ms']} ms（STT {rec['stt_ms']} / LLM {rec['llm_ms']}"
-              f" / TTS {rec['tts_ms']} / 再生開始 {rec['play_ms']}）")
+              f" / TTS {rec['tts_ms']} / 再生開始 {rec['play_ms']}）"
+              f"  全文の合成 {rec['tts_all_ms']} ms、途中の無音 {rec['stall_ms']} ms")
         LOG.parent.mkdir(exist_ok=True)
         with LOG.open("a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

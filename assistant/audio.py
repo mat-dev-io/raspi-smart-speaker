@@ -2,6 +2,7 @@
 import array
 import io
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -71,6 +72,12 @@ def wav_seconds(wav_bytes: bytes) -> float:
         return w.getnframes() / w.getframerate()
 
 
+def wav_pcm(wav_bytes: bytes) -> bytes:
+    """WAV のヘッダーを除いた PCM"""
+    with wave.open(io.BytesIO(wav_bytes)) as w:
+        return w.readframes(w.getnframes())
+
+
 def play_wav(wav_bytes: bytes, on_start=None) -> None:
     """WAV を再生し終わるまで待つ。on_start は aplay にデータを渡す直前に呼ぶ（遅延計測用）"""
     proc = subprocess.Popen(["aplay", "-D", DEVICE, "-q", "-"], stdin=subprocess.PIPE)
@@ -79,3 +86,36 @@ def play_wav(wav_bytes: bytes, on_start=None) -> None:
     proc.communicate(wav_bytes)
     if proc.returncode:
         raise RuntimeError(f"再生できなかった（aplay の終了コード {proc.returncode}）")
+
+
+class Player:
+    """PCM（S16_LE / 16 kHz / mono）を少しずつ渡して続けて再生する。1 文ずつ合成した音を途切れなくつなぐ用
+
+    aplay への書き込みは別スレッドで行う（パイプが詰まっても、呼び出し側は次の文の合成を続けられる）。
+    渡すのが再生に追いつかなければ、その間は無音になる。
+    """
+
+    def __init__(self):
+        self._proc = subprocess.Popen(
+            ["aplay", "-D", DEVICE, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(RATE), "-c", "1", "-"],
+            stdin=subprocess.PIPE,
+        )
+        self._queue: queue.Queue[bytes | None] = queue.Queue()
+        self._writer = threading.Thread(target=self._write, daemon=True)
+        self._writer.start()
+
+    def _write(self) -> None:
+        while (pcm := self._queue.get()) is not None:
+            self._proc.stdin.write(pcm)
+        self._proc.stdin.close()
+
+    def write(self, pcm: bytes) -> None:
+        self._queue.put(pcm)
+
+    def close(self) -> None:
+        """渡した音を再生し終わるまで待つ"""
+        self._queue.put(None)
+        self._writer.join()
+        self._proc.wait()
+        if self._proc.returncode:
+            raise RuntimeError(f"再生できなかった（aplay の終了コード {self._proc.returncode}）")
