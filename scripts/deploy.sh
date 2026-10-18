@@ -7,9 +7,9 @@ HOST="${RASPI_HOST:-raspi}"
 DEST="raspi-smart-speaker"
 cd "$(dirname "$0")/.."
 
-# .env・録音・ログは Pi 側にだけあるので、除外して消さない
+# .env・録音・ログ・TTS のキャッシュは Pi 側にだけあるので、除外して消さない
 rsync -a --delete \
-  --exclude .git/ --exclude .venv/ --exclude .env --exclude logs/ --exclude recordings/ --exclude __pycache__/ \
+  --exclude .git/ --exclude .venv/ --exclude .env --exclude logs/ --exclude recordings/ --exclude cache/ --exclude __pycache__/ \
   ./ "$HOST:$DEST/"
 
 ssh "$HOST" "cd $DEST && { [ -d .venv ] || python3 -m venv .venv; } && .venv/bin/pip install -q -r requirements.txt"

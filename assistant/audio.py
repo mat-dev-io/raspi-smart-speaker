@@ -11,6 +11,7 @@ DEVICE = os.environ.get("XVF_DEVICE", "plughw:Array,0")
 RATE = 16000
 CHANNELS = 2
 VOICE_CHANNEL = 0  # ch1（0 始まり）が音声処理済みの出力
+LOOPBACK_CHANNEL = 1  # ch2 は自分の再生音がエコーキャンセルで消されずに残る（ループバックテスト用）
 
 
 def extract_channel(raw: bytes, channels: int, index: int) -> bytes:
@@ -19,7 +20,7 @@ def extract_channel(raw: bytes, channels: int, index: int) -> bytes:
 
 
 class Recorder:
-    """start() で録音を始め、stop() で ch1 だけの PCM（S16_LE / 16 kHz / mono）を返す"""
+    """start() で録音を始め、stop() で 1ch 分（既定は ch1）の PCM（S16_LE / 16 kHz / mono）を返す"""
 
     def start(self) -> None:
         self._chunks: list[bytes] = []
@@ -35,11 +36,16 @@ class Recorder:
         while chunk := self._proc.stdout.read(4096):
             self._chunks.append(chunk)
 
-    def stop(self) -> bytes:
+    def stop(self, channel: int = VOICE_CHANNEL) -> bytes:
+        return self.stop_all()[channel]
+
+    def stop_all(self) -> list[bytes]:
+        """全チャンネルをそれぞれ mono の PCM で返す"""
         self._proc.send_signal(signal.SIGINT)
         self._proc.wait()
         self._reader.join()
-        return extract_channel(b"".join(self._chunks), CHANNELS, VOICE_CHANNEL)
+        raw = b"".join(self._chunks)
+        return [extract_channel(raw, CHANNELS, c) for c in range(CHANNELS)]
 
 
 def read_wav_mono(path: str) -> bytes:
@@ -71,3 +77,5 @@ def play_wav(wav_bytes: bytes, on_start=None) -> None:
     if on_start:
         on_start()
     proc.communicate(wav_bytes)
+    if proc.returncode:
+        raise RuntimeError(f"再生できなかった（aplay の終了コード {proc.returncode}）")
