@@ -4,6 +4,7 @@
   .venv/bin/python -m assistant.loopback                    # 全文を流して合否を出す
   .venv/bin/python -m assistant.loopback --inject dropout   # 録音をわざと壊して、不合格になるか確かめる
   .venv/bin/python -m assistant.loopback --keep recordings/loopback   # 録音を WAV で残す
+  .venv/bin/python -m assistant.loopback --tts openjtalk    # 流す音をローカル TTS で作る（既定は google）
 終了コード: 0 = 合格 / 1 = 不合格 / 2 = 環境エラー（デバイスがない・API が失敗した など）
 
 ch1・ch2 とも既定ではエコーキャンセル後の信号で、自分の再生音は消される。
@@ -12,11 +13,10 @@ TTS の音声は cache/loopback/ に保存し、2 回目以降は同じ音を流
 """
 import argparse
 import hashlib
-import io
+import os
 import sys
 import time
 import unicodedata
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,7 +27,7 @@ import usb.core
 from . import audio, xvf
 from .config import ROOT, load_env
 from .stt import GoogleSTT
-from .tts import GoogleTTS
+from .tts import make_tts
 
 # 表記ゆれ（数字・かな/漢字）や同音異義語（公園/公演 など）が出にくい文を選ぶ
 SENTENCES = [
@@ -167,7 +167,7 @@ def inject(kind: str, pcm: bytes) -> bytes:
 
 # --- 実行 -------------------------------------------------------------------
 
-def reference_wav(tts: GoogleTTS, text: str) -> bytes:
+def reference_wav(tts, text: str) -> bytes:
     """TTS の音声。声と文が同じならキャッシュを使う"""
     key = hashlib.sha1(f"{tts.voice}\n{text}".encode()).hexdigest()[:12]
     path = CACHE / f"{key}.wav"
@@ -189,11 +189,6 @@ def play_and_record(wav: bytes) -> bytes:
     return pcm
 
 
-def wav_pcm(wav: bytes) -> bytes:
-    with wave.open(io.BytesIO(wav)) as w:
-        return w.readframes(w.getnframes())
-
-
 def judge(sim: float, sig: Signal) -> list[str]:
     """不合格の理由（空なら合格）"""
     reasons = []
@@ -210,8 +205,8 @@ def judge(sim: float, sig: Signal) -> list[str]:
 
 def run(inject_kind: str | None, keep: str | None) -> bool:
     http = httpx.Client(timeout=30)
-    tts, stt = GoogleTTS(http), GoogleSTT(http)
-    print(f"== ループバックテスト（{len(SENTENCES)} 文、ch{audio.LOOPBACK_CHANNEL + 1} で録音"
+    tts, stt = make_tts(http), GoogleSTT(http)
+    print(f"== ループバックテスト（{len(SENTENCES)} 文、ch{audio.LOOPBACK_CHANNEL + 1} で録音、TTS {tts.voice}"
           f"{f'、故障注入 {inject_kind}' if inject_kind else ''}）")
     passed = 0
     for n, text in enumerate(SENTENCES, 1):
@@ -227,7 +222,7 @@ def run(inject_kind: str | None, keep: str | None) -> bool:
                 audio.write_wav_mono(str(Path(keep) / f"{n}-{attempt}.wav"), rec)
             hyp = stt.transcribe(for_stt(rec))
             sim = similarity(text, hyp)
-            sig = compare(wav_pcm(wav), rec)
+            sig = compare(audio.wav_pcm(wav), rec)
             reasons = judge(sim, sig)
             label = f"[{n}]" if attempt == 1 else f"[{n}] 流し直し"
             print(f"{label} {'PASS' if not reasons else 'FAIL'}  一致度 {sim:.2f}  SNR {sig.snr_db} dB"
@@ -248,9 +243,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--inject", choices=INJECTIONS, help="録音をわざと壊す（不合格になることを確かめる）")
     parser.add_argument("--keep", metavar="DIR", help="録音（ch2）を DIR に WAV で残す")
+    parser.add_argument("--tts", default="google", choices=["google", "openjtalk", "voicevox"],
+                        help="流す音を作る TTS（.env の TTS_ENGINE によらない）")
     args = parser.parse_args()
 
     load_env()
+    os.environ["TTS_ENGINE"] = args.tts
     try:
         if "[Array " not in Path("/proc/asound/cards").read_text():
             raise RuntimeError("XVF3800 が ALSA に見えない")
