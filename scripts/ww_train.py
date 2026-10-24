@@ -93,6 +93,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--target-fp", type=float, default=0.1, help="誤検知の目標（1 時間あたり）。完了条件は 10 時間に 1 回")
     ap.add_argument("--rounds", type=int, default=2, help="かさ増しを何周するか")
+    ap.add_argument("--layer-size", type=int, default=32, help="判定器の層の幅")
     ap.add_argument("--skip-augment", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -110,7 +111,7 @@ def main() -> None:
         "false_positive_validation_data_path": str(DATA / "validation.npy"),
         "feature_data_files": {"ACAV100M_sample": str(DATA / "acav100m.npy")},
         "batch_n_per_class": {"ACAV100M_sample": 1024, "adversarial_negative": 50, "positive": 50},
-        "model_type": "dnn", "layer_size": 32, "steps": args.steps,
+        "model_type": "dnn", "layer_size": args.layer_size, "steps": args.steps,
         "max_negative_weight": 1500, "target_false_positives_per_hour": args.target_fp,
     }
     config_path = out / f"{MODEL}.yml"

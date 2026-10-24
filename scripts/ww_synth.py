@@ -4,7 +4,8 @@
 使い方（WSL、リポジトリ直下で。先に scripts/ww_setup.sh）:
   .venv-ww/bin/python scripts/ww_synth.py --pos 12 --neg 6 --out cache/wakeword/trial   # 試しに聞く分
   .venv-ww/bin/python scripts/ww_synth.py --pos 5000 --neg 5000                         # 学習用
-1 本ごとに声（スタイル）・読み・速さ・高さ・抑揚を乱数で振る。
+1 本ごとに声・スタイル・読み・速さ・高さ・抑揚・読点の間を乱数で振る（声を均等に選んでから、その声のスタイルを選ぶ）。
+前後の無音は 0.05 秒に縮める（学習の窓は 2 秒前後で、長い音は学習の前に除かれるので）。
 陽性はウェイクワード、陰性は一部だけの言葉や似た音。16 kHz / mono の WAV で OUT/positive・OUT/negative に書き、
 1 本 1 行の設定を OUT/manifest.jsonl に残す。雑音・残響のかさ増しは学習（openWakeWord）の側でする。
 使う声は規約で機械学習の利用を禁止していない 11 体だけ（plans/stage3-wakeword.md の「決まったこと」3）。
@@ -14,7 +15,7 @@ import io
 import json
 import sys
 import wave
-from collections import Counter
+from collections import Counter, defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -77,6 +78,12 @@ def synthesize(job: tuple[Path, dict]) -> None:
     out, rec = job
     query = SYNTH.create_audio_query_from_kana(rec["kana"], rec["style_id"])
     query.speed_scale, query.pitch_scale, query.intonation_scale = rec["speed"], rec["pitch"], rec["intonation"]
+    query.pre_phoneme_length = query.post_phoneme_length = 0.05  # 既定は 0.1
+    phrases = query.accent_phrases
+    for phrase in phrases:
+        if phrase.pause_mora:
+            phrase.pause_mora["vowel_length"] = rec["pause"]  # 既定は 0.4 秒前後
+    query.accent_phrases = phrases
     with wave.open(io.BytesIO(SYNTH.synthesis(query, rec["style_id"]))) as w:
         rate = w.getframerate()
         x = np.frombuffer(w.readframes(w.getnframes()), np.int16)
@@ -93,19 +100,23 @@ def main() -> None:
     args = ap.parse_args()
 
     found = vvms()
-    styles = [s for _, ss in found for s in ss]
+    styles = defaultdict(list)  # 声 → [(声, スタイル名, スタイル ID)]
+    for _, ss in found:
+        for s in ss:
+            styles[s[0]].append(s)
     rng = np.random.default_rng(args.seed)
     out = ROOT / args.out
     recs = []
     for label, n, texts in [("positive", args.pos, POSITIVE), ("negative", args.neg, NEGATIVE)]:
         (out / label).mkdir(parents=True, exist_ok=True)
         for i in range(n):
-            voice, style, style_id = styles[rng.integers(len(styles))]
+            choices = styles[VOICES[rng.integers(len(VOICES))]]
+            voice, style, style_id = choices[rng.integers(len(choices))]
             recs.append({"file": f"{label}/{i:05d}.wav", "label": label, "kana": texts[rng.integers(len(texts))],
                          "voice": voice, "style": style, "style_id": style_id,
                          # 高さは下げる側に広く振る（11 体は高い声が多いので、低い声を補う）
                          "speed": round(rng.uniform(0.8, 1.3), 3), "pitch": round(rng.uniform(-0.15, 0.06), 3),
-                         "intonation": round(rng.uniform(0.7, 1.4), 3)})
+                         "intonation": round(rng.uniform(0.7, 1.4), 3), "pause": round(rng.uniform(0.08, 0.25), 3)})
 
     with Pool(args.jobs, initializer=load_synth, initargs=([p for p, _ in found],)) as pool:
         for i, _ in enumerate(pool.imap(synthesize, [(out, r) for r in recs], chunksize=8)):
