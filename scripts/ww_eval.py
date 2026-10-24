@@ -8,6 +8,7 @@
   見逃し率      検証用の陽性（合成音声）を、前後に間を入れ背景音を混ぜて 80 ms ずつ流し、一度も超えなかった割合
   似た音の誤検知  検証用の陰性（「アールツー」など）で超えた割合
   誤検知/時間    openWakeWord の検証用の特徴量（約 11 時間）で超えた回数。超えてから 2 秒は数えない
+  自分の声の見逃し  ww_train.py --own で取っておいた自分の声（own_test）を、背景音は混ぜずにそのまま流して数える
 推論は Pi と同じ openWakeWord の Model（ONNX）を使う。誤検知/時間だけは特徴量から直接判定器に通す。
 """
 import argparse
@@ -101,15 +102,23 @@ def main() -> None:
             s.append((f.name, max_score(model, mix(x, noise, rng.uniform(*args.snr), rng), name)))
         scores[label] = s
 
+    own = sorted((ROOT / args.train / "r2d2" / "own_test").glob("*.wav"))
+    own_scores = []
+    for f in own:
+        x, _ = sf.read(f, dtype="float32")
+        own_scores.append(max_score(model, np.concatenate([np.zeros(RATE), x, np.zeros(RATE // 2)]), name))
+
     fp = fp_per_hour(onnx_path)
     print(f"検証用: 陽性 {len(scores['positive'])} 本・陰性 {len(scores['negative'])} 本（背景音 SNR {args.snr[0]:g}〜{args.snr[1]:g} dB）、"
           f"誤検知の検証 {fp['hours']} 時間")
-    print("| しきい値 | 見逃し率 | 似た音の誤検知 | 誤検知/時間 |")
-    print("|---:|---:|---:|---:|")
+    own_head = f" 自分の声の見逃し（{len(own)} 本） |" if own else ""
+    print("| しきい値 | 見逃し率 | 似た音の誤検知 | 誤検知/時間 |" + own_head)
+    print("|---:|---:|---:|---:|" + ("---:|" if own else ""))
     for t in THRESHOLDS:
         miss = np.mean([v < t for _, v in scores["positive"]])
         fa = np.mean([v >= t for _, v in scores["negative"]])
-        print(f"| {t} | {miss:.1%} | {fa:.1%} | {fp[t]} |")
+        own_col = f" {np.mean([v < t for v in own_scores]):.0%} |" if own else ""
+        print(f"| {t} | {miss:.1%} | {fa:.1%} | {fp[t]} |" + own_col)
 
     by_voice = defaultdict(list)
     for f, v in scores["positive"]:

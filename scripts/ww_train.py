@@ -6,6 +6,7 @@
   .venv-ww/bin/python scripts/ww_train.py --steps 10000    # 試しに短く
   .venv-ww/bin/python scripts/ww_train.py --skip-augment   # 特徴量を作り直さずに学習だけやり直す
 ww_synth.py の音を 9:1 で学習用と検証用に分けて openWakeWord の学習スクリプト（train.py）に渡す。
+--own で自分の声の陽性を足せる（一部は検証用の own_test に取っておく。ww_eval.py が見逃し率を出す）。
 Piper での合成の段は使わない。出力は OUT/r2d2.onnx。
 
 train.py は古い torchaudio を前提にしているので、ここで次の手当てをしてから動かす（インストールしたものは書き換えない）:
@@ -61,6 +62,36 @@ def total_length(clips: list[Path], rng: np.random.Generator) -> int:
     return 32000 if n < 32000 or abs(n - 32000) <= 4000 else n
 
 
+def trim_voice(x: np.ndarray, limit: int) -> np.ndarray:
+    """limit サンプルの区間のうち、音の大きさ（2 乗）の合計がいちばん大きいところを切り出す。
+    声の区間を音量のしきい値で探すと、言葉の頭や終わりの小さい音を削ってしまうので、この方式にした"""
+    if len(x) <= limit:
+        return x
+    energy = np.concatenate([[0], np.cumsum(x.astype(np.float64) ** 2)])
+    start = int(np.argmax(energy[limit:] - energy[:-limit]))
+    return x[start:start + limit]
+
+
+def add_own(own: Path, out: Path, n_test: int, copies: int, limit: int, rng: np.random.Generator) -> dict:
+    """自分の声（ww_enroll.py で録った陽性）を足す。n_test 本は検証用に取っておき（own_test、切り出さずにそのまま）、
+    残りは声のある 1.8 秒前後を切り出して copies 本ずつ複製して学習の陽性に入れる（かさ増しで 1 本ずつ違う雑音・残響が付く）"""
+    files = sorted(own.glob("*.wav"))
+    files = [files[i] for i in rng.permutation(len(files))]
+    test_dir = out / MODEL / "own_test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    for old in test_dir.glob("*.wav"):
+        old.unlink()
+    for f in files[:n_test]:
+        (test_dir / f.name).symlink_to(f.resolve())
+    train_dir = out / MODEL / "positive_train"
+    for f in files[n_test:]:
+        x, _ = sf.read(f, dtype="float32")
+        x = trim_voice(x, limit)
+        for k in range(copies):
+            sf.write(train_dir / f"own_{f.stem}_{k:02d}.wav", x, RATE, subtype="PCM_16")
+    return {"own_test": len(files[:n_test]), "own_train": len(files[n_test:]), "own_copies": copies}
+
+
 def prepare(synth: Path, out: Path, seed: int) -> dict:
     """合成した音を学習用と検証用に分けてリンクを張る。窓より長い陽性は切れて陽性でなくなるので除く"""
     rng = np.random.default_rng(seed)
@@ -79,7 +110,7 @@ def prepare(synth: Path, out: Path, seed: int) -> dict:
             d = out / MODEL / f"{label}_{split}"
             d.mkdir(parents=True, exist_ok=True)
             for old in d.glob("*.wav"):
-                old.unlink()
+                old.unlink()  # 自分の声の複製（own_*.wav）も消す。リンクでなく実ファイル
             for f in part:
                 (d / f.name).symlink_to(f.resolve())
             stats[f"{label}_{split}"] = len(part)
@@ -97,11 +128,18 @@ def main() -> None:
     ap.add_argument("--neg-weight", type=int, default=1500, help="陰性にかける重みの上限（max_negative_weight）")
     ap.add_argument("--adv-batch", type=int, default=50, help="1 回の学習に入れる似た音（陰性）の数")
     ap.add_argument("--skip-augment", action="store_true")
+    ap.add_argument("--own", help="自分の声の陽性（ww_enroll.py の recordings/wakeword/positive を WSL に持ってきたもの）")
+    ap.add_argument("--own-test", type=int, default=20, help="自分の声のうち検証用に取っておく本数")
+    ap.add_argument("--own-copies", type=int, default=25, help="自分の声を何本ずつ複製して学習に入れるか")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     out = ROOT / args.out
     stats = prepare(ROOT / args.synth, out, args.seed)
+    if args.own:
+        limit = stats["total_length"] - int(0.2 * RATE)
+        stats |= add_own(ROOT / args.own, out, args.own_test, args.own_copies, limit, np.random.default_rng(args.seed))
+        stats["positive_train"] += stats["own_train"] * args.own_copies
     print(json.dumps(stats, ensure_ascii=False))
     config = {
         "model_name": MODEL, "target_phrase": ["R2D2"], "custom_negative_phrases": [],
@@ -132,7 +170,8 @@ def main() -> None:
         source = source.replace(old, new)
     sys.argv = [str(train_py), "--training_config", str(config_path), "--train_model"]
     if not args.skip_augment:
-        sys.argv.insert(3, "--augment_clips")
+        # train.py は特徴量のファイルが既にあると、かさ増しを黙って飛ばす。足した音が使われるよう作り直させる
+        sys.argv[3:3] = ["--augment_clips", "--overwrite"]
     logging.basicConfig(level=logging.INFO)
     exec(compile(source, str(train_py), "exec"), {"__name__": "__main__", "__file__": str(train_py)})
 
