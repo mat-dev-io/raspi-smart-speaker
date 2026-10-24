@@ -15,6 +15,7 @@ import json
 import sys
 import wave
 from collections import Counter
+from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
@@ -41,31 +42,45 @@ NEGATIVE = [
 ]
 
 
-def load_synth(threads: int):
-    from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceModelFile
+def vvms() -> list[tuple[Path, list[tuple[str, str, int]]]]:
+    """11 体の声が入っている VVM と、その中の (声, スタイル名, スタイル ID)"""
+    from voicevox_core.blocking import VoiceModelFile
 
-    ort = Onnxruntime.load_once(filename=str(VOICEVOX_ORT))
-    synth = Synthesizer(ort, OpenJtalk(str(VOICEVOX_DICT)), cpu_num_threads=threads)
-    styles = []  # (声, スタイル名, スタイル ID)
+    found = []
     for path in sorted((VOICEVOX / "models" / "vvms").glob("*.vvm"), key=lambda p: int(p.stem)):
         with VoiceModelFile.open(str(path)) as model:
-            found = [(c.name, s.name, s.id) for c in model.metas if c.name in VOICES for s in c.styles]
-            if found:
-                synth.load_voice_model(model)
-                styles += found
-    missing = set(VOICES) - {v for v, _, _ in styles}
+            styles = [(c.name, s.name, s.id) for c in model.metas if c.name in VOICES for s in c.styles]
+        if styles:
+            found.append((path, styles))
+    missing = set(VOICES) - {v for _, styles in found for v, _, _ in styles}
     if missing:
         raise SystemExit(f"NG: 声が見つからない: {', '.join(sorted(missing))}（scripts/ww_setup.sh を確認）")
-    return synth, styles
+    return found
 
 
-def synthesize(synth, kana: str, style_id: int, speed: float, pitch: float, intonation: float) -> bytes:
-    query = synth.create_audio_query_from_kana(kana, style_id)
-    query.speed_scale, query.pitch_scale, query.intonation_scale = speed, pitch, intonation
-    with wave.open(io.BytesIO(synth.synthesis(query, style_id))) as w:
+SYNTH = None  # 並列のプロセスごとに 1 つ
+
+
+def load_synth(paths: list[Path]) -> None:
+    from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceModelFile
+
+    global SYNTH
+    ort = Onnxruntime.load_once(filename=str(VOICEVOX_ORT))
+    # 1 本が短いので、スレッドを増やすより 1 スレッドのプロセスを並べた方が速い（24 スレッドだと 1 スレッドの 2 倍遅い）
+    SYNTH = Synthesizer(ort, OpenJtalk(str(VOICEVOX_DICT)), cpu_num_threads=1)
+    for path in paths:
+        with VoiceModelFile.open(str(path)) as model:
+            SYNTH.load_voice_model(model)
+
+
+def synthesize(job: tuple[Path, dict]) -> None:
+    out, rec = job
+    query = SYNTH.create_audio_query_from_kana(rec["kana"], rec["style_id"])
+    query.speed_scale, query.pitch_scale, query.intonation_scale = rec["speed"], rec["pitch"], rec["intonation"]
+    with wave.open(io.BytesIO(SYNTH.synthesis(query, rec["style_id"]))) as w:
         rate = w.getframerate()
         x = np.frombuffer(w.readframes(w.getnframes()), np.int16)
-    return to_wav(x, rate)
+    (out / rec["file"]).write_bytes(to_wav(x, rate))
 
 
 def main() -> None:
@@ -74,31 +89,33 @@ def main() -> None:
     ap.add_argument("--neg", type=int, default=6, help="陰性の本数")
     ap.add_argument("--out", default="cache/wakeword/synth")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--jobs", type=int, default=8, help="並列のプロセス数。1 つで約 1.3 GB のメモリを使う")
     args = ap.parse_args()
 
-    synth, styles = load_synth(args.threads)
+    found = vvms()
+    styles = [s for _, ss in found for s in ss]
     rng = np.random.default_rng(args.seed)
     out = ROOT / args.out
-    voices = Counter()
-    out.mkdir(parents=True, exist_ok=True)
-    with open(out / "manifest.jsonl", "w") as log:
-        for label, n, texts in [("positive", args.pos, POSITIVE), ("negative", args.neg, NEGATIVE)]:
-            (out / label).mkdir(exist_ok=True)
-            for i in range(n):
-                voice, style, style_id = styles[rng.integers(len(styles))]
-                rec = {"file": f"{label}/{i:05d}.wav", "label": label, "kana": texts[rng.integers(len(texts))],
-                       "voice": voice, "style": style, "style_id": style_id,
-                       # 高さは下げる側に広く振る（11 体は高い声が多いので、低い声を補う）
-                       "speed": round(rng.uniform(0.8, 1.3), 3), "pitch": round(rng.uniform(-0.15, 0.06), 3),
-                       "intonation": round(rng.uniform(0.7, 1.4), 3)}
-                wav = synthesize(synth, rec["kana"], style_id, rec["speed"], rec["pitch"], rec["intonation"])
-                (out / rec["file"]).write_bytes(wav)
-                log.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                voices[label, voice] += 1
-                if (i + 1) % 500 == 0:
-                    print(f"{label} {i + 1}/{n}", flush=True)
+    recs = []
+    for label, n, texts in [("positive", args.pos, POSITIVE), ("negative", args.neg, NEGATIVE)]:
+        (out / label).mkdir(parents=True, exist_ok=True)
+        for i in range(n):
+            voice, style, style_id = styles[rng.integers(len(styles))]
+            recs.append({"file": f"{label}/{i:05d}.wav", "label": label, "kana": texts[rng.integers(len(texts))],
+                         "voice": voice, "style": style, "style_id": style_id,
+                         # 高さは下げる側に広く振る（11 体は高い声が多いので、低い声を補う）
+                         "speed": round(rng.uniform(0.8, 1.3), 3), "pitch": round(rng.uniform(-0.15, 0.06), 3),
+                         "intonation": round(rng.uniform(0.7, 1.4), 3)})
 
+    with Pool(args.jobs, initializer=load_synth, initargs=([p for p, _ in found],)) as pool:
+        for i, _ in enumerate(pool.imap(synthesize, [(out, r) for r in recs], chunksize=8)):
+            if (i + 1) % 1000 == 0:
+                print(f"{i + 1}/{len(recs)}", flush=True)
+    with open(out / "manifest.jsonl", "w") as log:
+        for rec in recs:
+            log.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    voices = Counter((r["label"], r["voice"]) for r in recs)
     for label in ["positive", "negative"]:
         print(label, sum(c for (l, _), c in voices.items() if l == label), "本:",
               " ".join(f"{v} {voices[label, v]}" for v in VOICES if voices[label, v]))
