@@ -93,7 +93,7 @@ def main() -> None:
 
     scores = {}
     for label in ["positive", "negative"]:
-        files = sorted((ROOT / args.train / name / f"{label}_test").glob("*.wav"))
+        files = sorted((ROOT / args.train / "r2d2" / f"{label}_test").glob("*.wav"))  # 名前を変えたモデルも同じ検証用の音で測る
         s = []
         for f in files:
             x, _ = sf.read(f, dtype="float32")
