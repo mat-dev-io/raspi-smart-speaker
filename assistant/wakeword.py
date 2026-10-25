@@ -57,7 +57,8 @@ class Listener:
                            custom_verifier_threshold=float(os.environ.get("WAKEWORD_VERIFIER_THRESHOLD", "0.5")))
         self.verifier = bool(verifier)
 
-    def _chunks(self, proc: subprocess.Popen):
+    def chunks(self, proc: subprocess.Popen):
+        """arecord の出力を 80 ms ずつ ch1 の int16 にして返す"""
         size = CHUNK * audio.CHANNELS * 2
         while len(raw := proc.stdout.read(size)) == size:
             yield np.frombuffer(audio.extract_channel(raw, audio.CHANNELS, audio.VOICE_CHANNEL), np.int16)
@@ -69,7 +70,7 @@ class Listener:
         try:
             self.model.reset()
             floor = []  # 待っている間の音量（dB）。雑音の床を見積もる
-            chunks = self._chunks(proc)
+            chunks = self.chunks(proc)
             for pcm in chunks:
                 score = float(self.model.predict(pcm)[MODEL.stem])
                 floor = (floor + [rms_db(pcm)])[-50:]  # 直近 4 秒
