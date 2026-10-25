@@ -45,9 +45,10 @@ class Listener:
 
         # 既定値は WSL での評価（scripts/ww_verifier.py）で、確認役ありで誤検知が 1 時間に 0.1 回を切った値
         self.threshold = float(os.environ.get("WAKEWORD_THRESHOLD", "0.95"))
-        self.silence_sec = float(os.environ.get("WAKEWORD_SILENCE_MS", "800")) / 1000  # この長さ無音が続いたら止める
+        self.silence_sec = float(os.environ.get("WAKEWORD_SILENCE_MS", "1200")) / 1000  # この長さ無音が続いたら止める
         self.max_sec = float(os.environ.get("WAKEWORD_MAX_SEC", "10"))  # 話し続けてもここで止める
-        self.margin_db = float(os.environ.get("WAKEWORD_SPEECH_DB", "10"))  # 雑音の床よりこれだけ大きければ話している
+        self.margin_db = float(os.environ.get("WAKEWORD_SPEECH_DB", "6"))  # 雑音の床よりこれだけ大きければ話している
+        self.wait_sec = float(os.environ.get("WAKEWORD_WAIT_SEC", "4"))  # 検知のあと、話し始めるまでこれだけ待つ
         verifier = {}
         if VERIFIER.exists() and os.environ.get("WAKEWORD_VERIFIER", "1") == "1":
             verifier = {MODEL.stem: str(VERIFIER)}
@@ -79,19 +80,23 @@ class Listener:
             log(f"  検知（スコア {score:.2f}）")
             play_async(beep())
 
-            # 検知した後の音を録る。話し始めてから無音が silence_sec 続いたら止める（話し始めなければ 3 秒で諦める）
-            speech_db = np.percentile(floor, 20) + self.margin_db
-            recorded, quiet, spoke = [], 0.0, False
+            # 検知した後の音を録る。話し始めてから無音が silence_sec 続いたら止める（話し始めなければ wait_sec で諦める）
+            floor_db = np.percentile(floor, 20)
+            speech_db = floor_db + self.margin_db
+            recorded, quiet, spoke, loudest = [], 0.0, False, -200.0
             for pcm in chunks:
                 recorded.append(pcm)
-                if rms_db(pcm) >= speech_db:
+                db = rms_db(pcm)
+                loudest = max(loudest, db)
+                if db >= speech_db:
                     spoke, quiet = True, 0.0
                 else:
                     quiet += CHUNK / audio.RATE
                 sec = len(recorded) * CHUNK / audio.RATE
-                if (spoke and quiet >= self.silence_sec) or (not spoke and sec >= 3) or sec >= self.max_sec:
+                if (spoke and quiet >= self.silence_sec) or (not spoke and sec >= self.wait_sec) or sec >= self.max_sec:
                     break
             t_end = time.monotonic()
+            log(f"  録音 {sec:.1f} 秒（床 {floor_db:.0f} dB、話しているとみなす {speech_db:.0f} dB 以上、いちばん大きい音 {loudest:.0f} dB）")
         finally:
             proc.terminate()
             proc.wait()
