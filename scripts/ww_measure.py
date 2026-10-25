@@ -6,6 +6,7 @@
   nohup .venv/bin/python scripts/ww_measure.py fa --hours 10 > logs/ww_fa.out 2>&1 &   # 流しっぱなしで反応を数える
   .venv/bin/python scripts/ww_measure.py summary               # ログをまとめる
 miss はピッのあと --window 秒以内に検知したら当たり。fa はウェイクワードを含まない音（会話・テレビ・生活音）を流しておく。
+fa はスコアが --log-threshold を超えた出来事を、2 秒の間の最大スコアと一緒に残すので、しきい値ごとの回数をあとから出せる。
 どちらも検知ごとに 1 行 logs/wakeword.jsonl に追記する（録音は残さない）。fa は 10 分ごとに CPU 使用率と温度も残す。
 しきい値・確認役は assistant/wakeword.py と同じ（.env の WAKEWORD_*）。
 """
@@ -26,6 +27,7 @@ from assistant.wakeword import CHUNK, MODEL, Listener, beep  # noqa: E402
 
 LOG = ROOT / "logs" / "wakeword.jsonl"
 REFRACTORY = 2.0  # 反応してからこの秒数は数えない（同じ呼びかけで何度も数えない）
+THRESHOLDS = [0.5, 0.7, 0.8, 0.9, 0.95]  # summary でしきい値ごとの誤検知を出す
 
 
 def write(rec: dict) -> None:
@@ -77,23 +79,27 @@ def miss(listener: Listener, args) -> None:
 def fa(listener: Listener, args) -> None:
     end = time.monotonic() + args.hours * 3600
     proc = arecord()
-    count, last, next_stat = 0, -1e9, 0.0
+    count, opened, peak, next_stat = 0, None, 0.0, 0.0  # opened: 出来事が始まった時刻（2 秒の間の最大スコアを取る）
     cpu0, t0 = resource.getrusage(resource.RUSAGE_SELF).ru_utime, time.monotonic()
     start = datetime.now().isoformat(timespec="seconds")
     write({"ts": start, "kind": "fa_start", "hours": args.hours, "note": args.note,
-           "threshold": listener.threshold, "verifier": listener.verifier})
+           "threshold": args.log_threshold, "verifier": listener.verifier})
     n = 0
     try:
         listener.model.reset()
         for n, pcm in enumerate(listener.chunks(proc)):
             now = time.monotonic()
             score = float(listener.model.predict(pcm)[MODEL.stem])
-            if score >= listener.threshold and now - last >= REFRACTORY:
-                count += 1
-                last = now
-                write({"ts": datetime.now().isoformat(timespec="seconds"), "kind": "fa", "score": round(score, 3),
-                       "start": start})
-                print(f"{datetime.now():%H:%M:%S} 反応 {count} 回目（スコア {score:.2f}）", flush=True)
+            if opened is None and score >= args.log_threshold:
+                opened, peak = now, score
+            elif opened is not None:
+                peak = max(peak, score)
+                if now - opened >= REFRACTORY:
+                    count += 1
+                    write({"ts": datetime.now().isoformat(timespec="seconds"), "kind": "fa", "score": round(peak, 3),
+                           "start": start})
+                    print(f"{datetime.now():%H:%M:%S} 反応 {count} 回目（スコアの最大 {peak:.2f}）", flush=True)
+                    opened = None
             if now >= next_stat:
                 cpu = resource.getrusage(resource.RUSAGE_SELF).ru_utime
                 write({"ts": datetime.now().isoformat(timespec="seconds"), "kind": "stat", "start": start,
@@ -125,15 +131,17 @@ def summary(_listener, _args) -> None:
         print(f"見逃し 距離 {d} m・しきい値 {t}・確認役 {'あり' if v else 'なし'}: {n - hit}/{n}（{(n - hit) / n:.0%}）")
     for s in [r for r in recs if r["kind"] == "fa_start"]:
         stats = [r for r in recs if r["kind"] == "stat" and r["start"] == s["ts"]]
-        count = sum(r["kind"] == "fa" and r["start"] == s["ts"] for r in recs)
         end = [r for r in recs if r["kind"] == "fa_end" and r["start"] == s["ts"]]
         hours = end[0]["hours"] if end else (stats[-1]["hours"] if stats else 0)  # 走っている途中なら最後の記録まで
+        scores = [r["score"] for r in recs if r["kind"] == "fa" and r["start"] == s["ts"]]
         cpu = [r["cpu_pct"] for r in stats[1:]]  # 最初の 1 行は読み込みを含む
         temp = [r["temp"] for r in stats]
-        print(f"誤検知 {s['ts']}〜（{s['note'] or '-'}、しきい値 {s['threshold']}）: {count} 回 / {hours:.1f} 時間"
-              + (f"（{count / hours:.2f} 回/時間）" if hours else "")
+        print(f"誤検知 {s['ts']}〜（{s['note'] or '-'}）: {hours:.1f} 時間"
               + (f"、CPU {min(cpu):.0f}〜{max(cpu):.0f}%" if cpu else "")
               + (f"、温度 {min(temp):.0f}〜{max(temp):.0f} °C" if temp else ""))
+        for t in [t for t in THRESHOLDS if t >= s["threshold"]]:
+            n = sum(v >= t for v in scores)
+            print(f"  しきい値 {t}: {n} 回" + (f"（{n / hours:.2f} 回/時間）" if hours else ""))
 
 
 def main() -> None:
@@ -143,6 +151,7 @@ def main() -> None:
     ap.add_argument("--distance", type=float, default=1.0, help="miss: マイクからの距離（m）")
     ap.add_argument("--window", type=float, default=4.0, help="miss: ピッのあと何秒以内なら当たりか")
     ap.add_argument("--hours", type=float, default=10.0, help="fa: 測る時間")
+    ap.add_argument("--log-threshold", type=float, default=0.5, help="fa: これを超えた出来事を残す")
     ap.add_argument("--note", default="", help="条件のメモ（テレビ、会話 など）")
     args = ap.parse_args()
 
