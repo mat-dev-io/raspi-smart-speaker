@@ -9,6 +9,8 @@ miss はピッのあと --window 秒以内に検知したら当たり。fa は�
 fa はスコアが --log-threshold を超えた出来事を、2 秒の間の最大スコアと一緒に残すので、しきい値ごとの回数をあとから出せる。
 どちらも検知ごとに 1 行 logs/wakeword.jsonl に追記する（録音は残さない）。fa は 10 分ごとに CPU 使用率と温度も残す。
 しきい値・確認役は assistant/wakeword.py と同じ（.env の WAKEWORD_*）。
+常駐中のアシスタント（systemd/assistant.service）とはマイクを取り合うので、動いていたら止めてから測る。
+summary は常駐中の検知（assistant/main.py が残す kind=use）も日ごとに数える。続けて話さなかった回は誤検知の疑いが強い。
 """
 import argparse
 import json
@@ -121,6 +123,13 @@ def fa(listener: Listener, args) -> None:
 
 def summary(_listener, _args) -> None:
     recs = [json.loads(line) for line in LOG.open()] if LOG.exists() else []
+    days = {}
+    for r in recs:
+        if r["kind"] == "use":
+            n, quiet = days.get(r["ts"][:10], (0, 0))
+            days[r["ts"][:10]] = (n + 1, quiet + (not r["spoke"]))
+    for day, (n, quiet) in sorted(days.items()):
+        print(f"常駐 {day}: 検知 {n} 回、うち続けて話さなかった {quiet} 回")
     by = {}
     for r in recs:
         if r["kind"] == "miss":
@@ -156,6 +165,8 @@ def main() -> None:
     args = ap.parse_args()
 
     load_env()
+    if args.mode != "summary" and subprocess.run(["systemctl", "--user", "is-active", "-q", "assistant"]).returncode == 0:
+        raise SystemExit("NG: 常駐中のアシスタントがマイクを使っている（systemctl --user stop assistant で止めてから）")
     listener = None if args.mode == "summary" else Listener()
     {"miss": miss, "fa": fa, "summary": summary}[args.mode](listener, args)
 

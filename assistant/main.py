@@ -24,6 +24,7 @@ from .stt import make_stt
 from .tts import make_tts, split_sentences
 
 LOG = ROOT / "logs" / "latency.jsonl"
+WAKEWORD_LOG = ROOT / "logs" / "wakeword.jsonl"  # scripts/ww_measure.py と同じ。summary で数えられる
 
 
 def ms(start: float, end: float) -> int:
@@ -114,6 +115,11 @@ def wakeword_loop(pipe: Pipeline, save_dir: str | None) -> None:
           "Ctrl+C で終了）")
     while True:
         pcm, t_end, score = listener.listen()
+        # 検知ごとに残す。呼びかけていないのに反応した回は、たいてい続けて話さない（spoke=false）
+        WAKEWORD_LOG.parent.mkdir(exist_ok=True)
+        with WAKEWORD_LOG.open("a") as f:
+            f.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"), "kind": "use",
+                                "score": round(score, 3), "spoke": bool(pcm), "threshold": listener.threshold}) + "\n")
         if not pcm:
             print("  話し始めなかったので待ち直す")
             continue

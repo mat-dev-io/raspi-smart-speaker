@@ -43,8 +43,8 @@ class Listener:
     def __init__(self):
         from openwakeword.model import Model
 
-        # 既定値は WSL での評価（scripts/ww_verifier.py）で、確認役ありで誤検知が 1 時間に 0.1 回を切った値
-        self.threshold = float(os.environ.get("WAKEWORD_THRESHOLD", "0.95"))
+        # 既定値は Pi での実測（scripts/ww_measure.py、確認役あり）で、見逃し 4/100・誤検知 0 回/10 時間だった値
+        self.threshold = float(os.environ.get("WAKEWORD_THRESHOLD", "0.85"))
         self.silence_sec = float(os.environ.get("WAKEWORD_SILENCE_MS", "1200")) / 1000  # この長さ無音が続いたら止める
         self.max_sec = float(os.environ.get("WAKEWORD_MAX_SEC", "10"))  # 話し続けてもここで止める
         self.margin_db = float(os.environ.get("WAKEWORD_SPEECH_DB", "6"))  # 雑音の床よりこれだけ大きければ話している
