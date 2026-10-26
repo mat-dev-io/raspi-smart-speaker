@@ -10,4 +10,7 @@ cd "$(dirname "$0")/.."
 ./scripts/deploy.sh >/dev/null
 ARGS=""
 [ $# -gt 0 ] && ARGS="$(printf '%q ' "$@")"
-ssh "$HOST" "cd raspi-smart-speaker && .venv/bin/python -m assistant.loopback $ARGS"
+# 常駐中のアシスタント（systemd/assistant.service）とはマイクを取り合うので、テストの間だけ止めて、終わったら戻す
+ssh "$HOST" "systemctl --user is-active -q assistant && systemctl --user stop assistant && touch /tmp/assistant-paused; \
+  cd raspi-smart-speaker && .venv/bin/python -m assistant.loopback $ARGS; code=\$?; \
+  [ -f /tmp/assistant-paused ] && rm /tmp/assistant-paused && systemctl --user start assistant; exit \$code"
