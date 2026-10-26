@@ -1,0 +1,18 @@
+# 音声アシスタントを常駐させる（段階 3）。「R2D2」と呼びかけて話す
+# ユーザーのサービスとして動かす（sudo は要らない）。scripts/deploy.sh が ~/.config/systemd/user/ に入れる
+#   systemctl --user enable --now assistant    # 動かし始める（ログインしていなくても動かすには、1 回だけ sudo loginctl enable-linger $USER）
+#   systemctl --user stop assistant            # 止める（scripts/ww_measure.py やループバックテストの前に。マイクを取り合う）
+#   journalctl --user -u assistant -f          # 画面の出力を見る
+[Unit]
+Description=音声アシスタント（R2D2 で聞き始める）
+After=sound.target
+
+[Service]
+WorkingDirectory=%h/raspi-smart-speaker
+Environment=INPUT=wakeword PYTHONUNBUFFERED=1
+ExecStart=%h/raspi-smart-speaker/.venv/bin/python -m assistant.main
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

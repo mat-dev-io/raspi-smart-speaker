@@ -42,4 +42,6 @@ with zipfile.ZipFile("models/htsvoice/mmdagent.zip") as z:
 PY
   rm models/htsvoice/mmdagent.zip
 fi
+# openWakeWord の特徴抽出（melspectrogram・embedding）。venv の openwakeword の中に落とす（ウェイクワードのモデルそのものは WSL で作って models/wakeword/ に置く）
+.venv/bin/python -c "import openwakeword.utils as u; u.download_models(model_names=['__none__'])"
 du -sh models/*

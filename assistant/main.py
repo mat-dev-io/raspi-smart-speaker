@@ -1,7 +1,8 @@
-"""Enter キー → 録音 → STT → Claude → TTS → 再生（STT・TTS は .env の STT_ENGINE / TTS_ENGINE で選ぶ）
+"""Enter キーか呼びかけ → 録音 → STT → Claude → TTS → 再生（入力・STT・TTS は .env の INPUT / STT_ENGINE / TTS_ENGINE で選ぶ）
 
 使い方（Pi 上、リポジトリ直下で）:
   .venv/bin/python -m assistant.main                         # マイク。Enter で録音開始・終了
+  INPUT=wakeword .venv/bin/python -m assistant.main          # マイク。「R2D2」と呼びかけて話す（無音で止まる）
   .venv/bin/python -m assistant.main --save recordings       # マイク。録音を WAV で保存する
   .venv/bin/python -m assistant.main --wav recordings/*.wav --repeat 3   # 録音済み WAV で計測
 各区間の時間は logs/latency.jsonl に 1 行ずつ追記する。
@@ -23,6 +24,7 @@ from .stt import make_stt
 from .tts import make_tts, split_sentences
 
 LOG = ROOT / "logs" / "latency.jsonl"
+WAKEWORD_LOG = ROOT / "logs" / "wakeword.jsonl"  # scripts/ww_measure.py と同じ。summary で数えられる
 
 
 def ms(start: float, end: float) -> int:
@@ -105,6 +107,30 @@ def mic_loop(pipe: Pipeline, save_dir: str | None) -> None:
         pipe.run(pcm, "mic", t_end)
 
 
+def wakeword_loop(pipe: Pipeline, save_dir: str | None) -> None:
+    from .wakeword import Listener
+
+    listener = Listener()
+    print(f"「R2D2」と呼びかけてください（しきい値 {listener.threshold}、確認役 {'あり' if listener.verifier else 'なし'}。"
+          "Ctrl+C で終了）")
+    while True:
+        pcm, t_end, score = listener.listen()
+        # 検知ごとに残す。呼びかけていないのに反応した回は、たいてい続けて話さない（spoke=false）
+        WAKEWORD_LOG.parent.mkdir(exist_ok=True)
+        with WAKEWORD_LOG.open("a") as f:
+            f.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"), "kind": "use",
+                                "score": round(score, 3), "spoke": bool(pcm), "threshold": listener.threshold}) + "\n")
+        if not pcm:
+            print("  話し始めなかったので待ち直す")
+            continue
+        if save_dir:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            path = Path(save_dir) / f"{datetime.now():%Y%m%d-%H%M%S}.wav"
+            audio.write_wav_mono(str(path), pcm)
+            print(f"  保存: {path}")
+        pipe.run(pcm, f"wakeword:{score:.2f}", t_end)
+
+
 def wav_bench(pipe: Pipeline, paths: list[str], repeat: int) -> None:
     for i in range(repeat):
         for path in paths:
@@ -125,6 +151,8 @@ def main() -> None:
     try:
         if args.wav:
             wav_bench(pipe, args.wav, args.repeat)
+        elif os.environ.get("INPUT", "enter") == "wakeword":
+            wakeword_loop(pipe, args.save)
         else:
             mic_loop(pipe, args.save)
     except (KeyboardInterrupt, EOFError):

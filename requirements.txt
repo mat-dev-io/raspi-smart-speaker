@@ -8,3 +8,9 @@ faster-whisper==1.2.1
 # ローカル TTS（段階 2）。voicevox_core は PyPI に無いので GitHub のリリースから入れる（Pi の aarch64 用）
 pyopenjtalk-plus==0.4.1.post9
 voicevox_core @ https://github.com/VOICEVOX/voicevox_core/releases/download/0.17.0/voicevox_core-0.17.0-cp310-abi3-manylinux_2_34_aarch64.whl ; platform_machine == "aarch64"
+# ウェイクワード（段階 3）。openwakeword 本体は依存の tflite-runtime が Python 3.12 に無いので deploy.sh で --no-deps で入れる
+onnxruntime==1.31.0
+scipy==1.16.2
+scikit-learn==1.9.1
+requests==2.34.2
+tqdm==4.70.1
