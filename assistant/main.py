@@ -39,8 +39,8 @@ class Pipeline:
         self.tts = make_tts(self.http)
         self.split = os.environ.get("TTS_SPLIT", "1") == "1"
 
-    def run(self, pcm: bytes, source: str, t_end: float) -> None:
-        """t_end は録音を終えた時刻（遅延の起点）"""
+    def run(self, pcm: bytes, source: str, t_end: float) -> dict | None:
+        """t_end は録音を終えた時刻（遅延の起点）。logs/latency.jsonl に書いた行を返す（聞き取れなければ None）"""
         rec = {"ts": datetime.now().isoformat(timespec="seconds"), "source": source,
                "rec_sec": round(len(pcm) / 2 / audio.RATE, 2),
                "model": self.llm.model, "effort": self.llm.effort,
@@ -50,7 +50,7 @@ class Pipeline:
         t_stt = time.monotonic()
         print(f"あなた: {text or '（聞き取れず）'}")
         if not text:
-            return
+            return None
 
         reply = self.llm.ask(text)
         t_llm = time.monotonic()
@@ -82,7 +82,8 @@ class Pipeline:
                    tts_all_ms=ms(t_llm, t_tts_all), stall_ms=round(stall * 1000), sentences=len(sentences),
                    split=self.split, play_ms=ms(t_tts, t_play), total_ms=ms(t_end, t_play),
                    reply_sec=round(reply_sec, 2), reply_chars=len(reply),
-                   transcript=text, reply=reply)
+                   transcript=text, reply=reply,
+                   api_ms=self.llm.last["api_ms"], input_tokens=self.llm.last["input_tokens"])
         if self.llm.skills:
             # 段階 4。llm_rounds は Claude への問い合わせ回数（スキルを呼ぶと 2 以上）。llm_ms は skill_ms を含む
             rec.update(llm_rounds=self.llm.last["rounds"], skills=self.llm.last["skills"],
@@ -93,6 +94,7 @@ class Pipeline:
         LOG.parent.mkdir(exist_ok=True)
         with LOG.open("a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return rec
 
 
 def mic_loop(pipe: Pipeline, save_dir: str | None) -> None:
