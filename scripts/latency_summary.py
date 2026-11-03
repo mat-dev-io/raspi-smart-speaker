@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """logs/latency.jsonl の区間ごとの遅延を集計して Markdown の表で出す
 
-使い方: python3 scripts/latency_summary.py [--source wav:] [--since 2026-10-18T12:00] [--skip-first N]
+使い方: python3 scripts/latency_summary.py [--source wav:] [--since 2026-10-18T12:00] [--skip-first N] [--skills used]
 """
 import argparse
 import json
@@ -11,8 +11,9 @@ from pathlib import Path
 LOG = Path(__file__).resolve().parent.parent / "logs" / "latency.jsonl"
 COLUMNS = [("stt_ms", "STT"), ("llm_ms", "Claude"), ("tts_ms", "TTS"),
            ("play_ms", "再生開始"), ("total_ms", "合計")]
-# 段階 2 から（1 文ずつ合成する作り）。古い行には無いので、全行にあるときだけ出す
-EXTRA = [("tts_all_ms", "全文の合成"), ("stall_ms", "途中の無音")]
+# 段階 2 から（1 文ずつ合成する作り）・段階 4 から（スキル）。古い行には無いので、全行にあるときだけ出す
+EXTRA = [("tts_all_ms", "全文の合成"), ("stall_ms", "途中の無音"), ("skill_ms", "スキルの実行"),
+         ("llm_rounds", "Claude への問い合わせ（回）")]
 
 
 def p90(values: list[int]) -> float:
@@ -25,10 +26,14 @@ def main() -> None:
     parser.add_argument("--source", default="", help="source がこの文字列で始まる行だけ（例: wav: / mic）")
     parser.add_argument("--since", default="", help="ts がこの時刻以降の行だけ（ISO 形式）")
     parser.add_argument("--skip-first", type=int, default=0, help="先頭 N 件を除く（接続の暖機分）")
+    parser.add_argument("--skills", choices=["any", "used", "unused"], default="any",
+                        help="段階 4。used = スキルを呼んだ回だけ、unused = スキルありの設定で呼ばなかった回だけ")
     args = parser.parse_args()
 
     rows = [json.loads(line) for line in Path(args.log).read_text().splitlines() if line.strip()]
     rows = [r for r in rows if "total_ms" in r and r["source"].startswith(args.source) and r["ts"] >= args.since]
+    if args.skills != "any":
+        rows = [r for r in rows if "skills" in r and bool(r["skills"]) == (args.skills == "used")]
     rows = rows[args.skip_first:]
     if not rows:
         raise SystemExit("該当する記録がない")

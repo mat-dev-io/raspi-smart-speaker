@@ -55,6 +55,9 @@ class Pipeline:
         reply = self.llm.ask(text)
         t_llm = time.monotonic()
         print(f"Claude: {reply}")
+        if self.llm.last.get("skills"):
+            print(f"  スキル: {', '.join(self.llm.last['skills'])}（{self.llm.last['skill_ms']} ms、"
+                  f"問い合わせ {self.llm.last['rounds']} 回）")
 
         sentences = split_sentences(reply) if self.split else [reply]
         player = audio.Player()  # aplay の起動は合成の間に済ませておく
@@ -80,6 +83,10 @@ class Pipeline:
                    split=self.split, play_ms=ms(t_tts, t_play), total_ms=ms(t_end, t_play),
                    reply_sec=round(reply_sec, 2), reply_chars=len(reply),
                    transcript=text, reply=reply)
+        if self.llm.skills:
+            # 段階 4。llm_rounds は Claude への問い合わせ回数（スキルを呼ぶと 2 以上）。llm_ms は skill_ms を含む
+            rec.update(llm_rounds=self.llm.last["rounds"], skills=self.llm.last["skills"],
+                       skill_ms=self.llm.last["skill_ms"], skill_errors=self.llm.last["skill_errors"])
         print(f"  遅延 合計 {rec['total_ms']} ms（STT {rec['stt_ms']} / LLM {rec['llm_ms']}"
               f" / TTS {rec['tts_ms']} / 再生開始 {rec['play_ms']}）"
               f"  全文の合成 {rec['tts_all_ms']} ms、途中の無音 {rec['stall_ms']} ms")
