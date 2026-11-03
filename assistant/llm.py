@@ -53,10 +53,12 @@ class Claude:
             kwargs["tools"] = [s.tool() for s in self.skills.values()]
             system = SYSTEM + SYSTEM_SKILLS
         messages = [{"role": "user", "content": question}]
-        self.last = {"rounds": 0, "skills": [], "skill_ms": 0, "skill_errors": 0}
+        # api_ms は API の呼び出しそのものの時間、input_tokens は送った入力の量（どちらも全往復の合計。C3 の判定に使う）
+        self.last = {"rounds": 0, "skills": [], "skill_ms": 0, "skill_errors": 0, "api_ms": 0, "input_tokens": 0}
 
         for _ in range(MAX_ROUNDS):
             self.last["rounds"] += 1
+            t = time.monotonic()
             response = self.client.beta.messages.create(
                 model=self.model,
                 max_tokens=2048,
@@ -65,6 +67,8 @@ class Claude:
                 messages=messages,
                 **kwargs,
             )
+            self.last["api_ms"] += round((time.monotonic() - t) * 1000)
+            self.last["input_tokens"] += response.usage.input_tokens
             if response.stop_reason == "refusal":
                 return REFUSAL_REPLY
             text = "".join(b.text for b in response.content if b.type == "text").strip()
